@@ -1,0 +1,81 @@
+# moonshake.toml — copy this to your project root and fill in your values.
+# Run: moonshake (from the directory containing this file)
+# Or:  moonshake --config /path/to/moonshake.toml
+
+[paths]
+# Directory containing your Markdown post files (can be plain text, not Obsidian-specific)
+posts = "~/my-blog/posts"
+
+# Root of your static site output
+site  = "~/Sites/myblog.com"
+
+[blog]
+base_url         = "https://www.myblog.com"
+title            = "Your Name"
+
+# Shown under the title on the blog index page (optional)
+subtitle         = "Brooklyn, NY"
+
+# Meta description for the blog index page
+description      = "Your blog description — 150 characters or less."
+
+# RSS feed description (falls back to description if omitted)
+rss_description  = "Posts by Your Name."
+
+author           = "Your Name"
+email            = "you@example.com"    # used in structured data; optional
+locale           = "en_US"
+
+# URL path to your stylesheet, relative to site root
+# This file must exist — see examples/style.css for a starting point
+css_url          = "/blog/assets/style.css"
+
+# Fallback OG image — relative to base_url
+default_og_image = "/images/og-default.jpg"
+
+# Slugs in /blog/ that are not posts (won't appear in index, feed, or sitemap)
+excluded_slugs   = []
+
+[author]
+# Used in Schema.org Person structured data (all optional)
+location_city    = "Brooklyn"
+location_region  = "NY"
+location_country = "US"
+linkedin         = "https://www.linkedin.com/in/yourhandle/"
+github           = "https://github.com/yourhandle"
+bluesky          = "https://bsky.app/profile/yourhandle"
+# twitter        = "https://twitter.com/yourhandle"
+
+# ── Newsletter signup form ────────────────────────────────────────────────────
+# Remove this section entirely to omit the signup form.
+# Currently supports Buttondown (https://buttondown.com).
+[newsletter]
+username = "yourhandle"
+heading  = "Subscribe to My Newsletter"
+blurb    = "Get new posts by email. No spam, unsubscribe anytime."
+
+# ── Navigation links ──────────────────────────────────────────────────────────
+# Add, remove, or reorder [[nav]] entries freely.
+# post_only  = true  → only appears on individual post pages (not the index)
+# index_only = true  → only appears on the index page
+# external   = true  → adds target="_blank" rel="noopener"
+# css_class  = "..."  → defaults to "nav-link"
+
+[[nav]]
+label     = "← Go Back"
+href      = "/blog/"
+css_class = "back-link"
+post_only = true
+
+[[nav]]
+label     = "Home"
+href      = "https://www.myblog.com"
+css_class = "home-link"
+
+[[nav]]
+label = "About"
+href  = "/about/"
+
+[[nav]]
+label = "Contact"
+href  = "mailto:you@example.com"

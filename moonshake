@@ -1,0 +1,1452 @@
+#!/usr/bin/env python3
+"""Moonshake — build a blog from Markdown posts.
+
+Usage:
+  moonshake init           Scaffold a new project in the current directory
+  moonshake                Build everything (moonshake.toml in CWD)
+  moonshake --dry          Show what would change, write nothing
+  moonshake --config PATH  Use a specific config file
+"""
+import argparse, html, json, re, shutil, sys, zipfile
+from datetime import datetime, timezone, date
+from email.utils import format_datetime
+from pathlib import Path
+
+# ── Deps ─────────────────────────────────────────────────────────────────────
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        sys.exit("missing dep: pip install tomli  (or upgrade to Python 3.11+)")
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("missing dep: pip install pyyaml")
+
+try:
+    import markdown as md_lib
+except ImportError:
+    sys.exit("missing dep: pip install markdown")
+
+
+# ── Args ─────────────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser(
+    description="Moonshake blog builder",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+)
+parser.add_argument("--dry",    action="store_true", help="Show changes, write nothing")
+parser.add_argument("--config", default="moonshake.toml", help="Path to config file")
+subparsers = parser.add_subparsers(dest="command")
+subparsers.add_parser("init", help="Scaffold a new Moonshake project in the current directory")
+ARGS = parser.parse_args()
+DRY  = ARGS.dry
+
+
+# ── Init scaffolding ──────────────────────────────────────────────────────────
+STARTER_TOML = """\
+# moonshake.toml — your Moonshake configuration
+# Edit this file, then run: moonshake --dry
+
+[paths]
+# Where your Markdown post files live
+posts = "./posts"
+
+# Where Moonshake writes the built site
+site  = "./site"
+
+[blog]
+# Your site's root URL — no trailing slash
+base_url = "https://www.yoursite.com"
+
+# Your name — used as the blog title and in bylines
+title  = "Your Name"
+
+# Short tagline shown under your name on the blog index (optional)
+subtitle = "Brooklyn, NY"
+
+# Description for the blog index page and social sharing
+description = "Your blog — essays, stories, and ideas."
+
+# RSS feed description (falls back to description if omitted)
+# rss_description = "Posts by Your Name."
+
+# Your name as it appears in bylines, copyright, and structured data
+author = "Your Name"
+
+# Contact email — shown in structured data (optional)
+email = "you@yoursite.com"
+
+# URL path to your stylesheet, relative to the site root.
+# The starter stylesheet has already been written there — customize it freely.
+css_url = "/blog/assets/style.css"
+
+# Fallback image for social sharing (og:image) — relative to base_url
+default_og_image = "/images/og-default.jpg"
+
+# Slugs of pages in /blog/ that are NOT posts (won't appear in index or feed)
+excluded_slugs = []
+
+[author]
+# Used in Schema.org structured data — all optional, delete what you don't need
+location_city    = "Brooklyn"
+location_region  = "NY"
+location_country = "US"
+# linkedin = "https://www.linkedin.com/in/yourhandle/"
+# github   = "https://github.com/yourhandle"
+# bluesky  = "https://bsky.app/profile/yourhandle"
+
+# ── Newsletter signup form ────────────────────────────────────────────────────
+# Remove this entire section to disable the signup form.
+# Currently supports Buttondown (https://buttondown.com) — sign up for a free account,
+# then replace "yourhandle" with your Buttondown username.
+[newsletter]
+username = "yourhandle"
+heading  = "Subscribe to My Newsletter"
+blurb    = "Get new posts by email. No spam, unsubscribe anytime."
+
+# ── Navigation links ──────────────────────────────────────────────────────────
+# Add, remove, or reorder [[nav]] entries as you like.
+#
+# Options per link:
+#   post_only  = true  → only appears on individual post pages (not the index)
+#   index_only = true  → only appears on the blog index
+#   external   = true  → opens in a new tab
+#   css_class  = "..." → defaults to "nav-link"
+
+[[nav]]
+label     = "← Go Back"
+href      = "/blog/"
+css_class = "back-link"
+post_only = true
+
+[[nav]]
+label     = "Home"
+href      = "https://www.yoursite.com"
+css_class = "home-link"
+
+[[nav]]
+label = "About"
+href  = "/about/"
+
+[[nav]]
+label = "Contact"
+href  = "mailto:you@yoursite.com"
+"""
+
+STARTER_POST = """\
+---
+title: Hello World
+date: {today}
+description: My first post — welcome to my blog.
+---
+
+Welcome! This is your first post. Edit it, delete it, or leave it as-is while you get started.
+
+## Writing posts
+
+Posts are Markdown files saved in your `posts/` folder. Each one starts with a frontmatter block between `---` lines:
+
+```
+---
+title: My Post Title
+date: 2026-01-15
+description: A short summary for SEO and the blog index.
+feature_image: cover.jpg   # optional hero image
+tags: [writing, ideas]     # optional tags
+draft: true                # set to hide from builds
+---
+```
+
+Below the frontmatter, write in standard Markdown. Tables, footnotes, fenced code blocks, and smart quotes are all supported.
+
+## Images
+
+Drop images in the same folder as your post (or anywhere in your posts directory). Reference them normally:
+
+```
+![A description of the image](my-photo.jpg)
+```
+
+Moonshake will copy them to the right place and rewrite the paths automatically.
+
+## Building
+
+```
+moonshake --dry   # preview what would change
+moonshake         # build the site
+```
+
+That's it. Happy writing.
+"""
+
+STARTER_CSS = """\
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap');
+
+:root {
+  --color-bg:         #0f0f0f;
+  --color-surface:    #1a1a1a;
+  --color-surface-2:  #242424;
+  --color-border:     #2e2e2e;
+  --color-border-subtle: #1e1e1e;
+  --color-text:       #e8e4de;
+  --color-text-muted: #8a8480;
+  --color-text-faint: #4a4644;
+  --color-accent:     #c8a96e;
+  --color-accent-hover: #dfc08a;
+  --color-accent-dim: rgba(200, 169, 110, 0.15);
+  --color-link:       #c8a96e;
+  --color-link-hover: #dfc08a;
+
+  --font-serif: 'Lora', Georgia, 'Times New Roman', serif;
+  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:  'JetBrains Mono', 'Courier New', monospace;
+
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  --border-radius: 8px;
+  --container-prose: 680px;
+
+  --transition-base: 0.15s ease;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-font-smoothing: antialiased; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  margin: 0;
+  padding: 0;
+}
+
+.container {
+  width: 100%;
+  max-width: var(--container-prose);
+  margin: 0 auto;
+  padding: var(--space-10) var(--space-6);
+}
+
+@media (max-width: 768px) {
+  .container { padding: var(--space-6) var(--space-4); }
+}
+
+header {
+  border-bottom: 1px solid var(--color-border-subtle);
+  padding-bottom: var(--space-6);
+  margin-bottom: var(--space-8);
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  row-gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  align-items: center;
+}
+nav .back-link { color: var(--color-text); }
+
+nav a {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: color var(--transition-base);
+}
+nav a:hover { color: var(--color-text); }
+
+.blog-title {
+  font-family: var(--font-serif);
+  font-size: 2.5rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0 0 var(--space-2) 0;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+@media (max-width: 480px) {
+  .blog-title { font-size: 2rem; }
+}
+
+.blog-subtitle {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 var(--space-2) 0;
+}
+
+.post-title {
+  font-family: var(--font-serif);
+  font-size: 1.875rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: var(--space-8) 0 var(--space-3) 0;
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--color-border-subtle);
+  line-height: 1.25;
+}
+@media (max-width: 480px) {
+  .post-title { font-size: 1.5rem; }
+}
+
+.date {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  margin-top: var(--space-2);
+}
+
+.posts-list { margin-top: var(--space-4); }
+
+.post-item {
+  display: flex;
+  gap: var(--space-5);
+  align-items: flex-start;
+  padding: var(--space-5) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.post-item:last-child { border-bottom: none; }
+
+.post-item-text { flex: 1; min-width: 0; }
+
+.post-item-image {
+  flex-shrink: 0;
+  width: 128px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--border-radius);
+  background: var(--color-surface);
+  display: block;
+  transition: opacity var(--transition-base);
+}
+.post-item-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.post-item-image:hover { opacity: 0.85; }
+
+@media (max-width: 520px) {
+  .post-item { gap: var(--space-4); }
+  .post-item-image { width: 88px; }
+}
+
+.post-item h2 {
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 var(--space-2) 0;
+  line-height: 1.3;
+  color: var(--color-text);
+}
+.post-item h2 a {
+  color: var(--color-text);
+  text-decoration: none;
+  transition: color var(--transition-base);
+}
+.post-item h2 a:hover { color: var(--color-accent); }
+
+.load-more {
+  display: block;
+  width: 100%;
+  margin-top: var(--space-6);
+  padding: var(--space-4);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--transition-base), border-color var(--transition-base), background var(--transition-base);
+}
+.load-more:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  background: var(--color-accent-dim);
+}
+
+.post-date {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-2);
+}
+.post-excerpt {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  margin-top: var(--space-2);
+}
+
+.content {
+  font-size: 1.125rem;
+  line-height: 1.8;
+  color: var(--color-text);
+}
+
+.content p { margin-bottom: 1.25em; }
+
+.content h2 {
+  font-family: var(--font-serif);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 2em 0 0.75em;
+  color: var(--color-text);
+  line-height: 1.25;
+}
+.content h3 {
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 1.5em 0 0.5em;
+  color: var(--color-text);
+}
+
+.content a {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color var(--transition-base);
+}
+.content a:hover { color: var(--color-link-hover); }
+
+.content code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--color-surface);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+}
+.content pre {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: var(--space-4);
+  overflow-x: auto;
+  margin: 1.5em 0;
+}
+.content pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.9em;
+}
+.content blockquote {
+  border-left: 3px solid var(--color-accent);
+  margin: 1.5em 0;
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+}
+.content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--border-radius);
+  margin: 1.5em 0;
+}
+.content hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 2em 0;
+}
+.content ul, .content ol { padding-left: 1.5em; margin-bottom: 1.25em; }
+.content li { margin-bottom: 0.4em; }
+.content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  font-size: 0.9em;
+}
+.content th, .content td {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+.content th {
+  background: var(--color-surface);
+  font-weight: 600;
+}
+
+footer {
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: var(--space-8);
+  margin-top: var(--space-12);
+}
+footer p {
+  font-size: 0.875rem;
+  color: var(--color-text-faint);
+  margin: 0 0 var(--space-2) 0;
+}
+footer a {
+  color: var(--color-text-faint);
+  text-decoration: none;
+  transition: color var(--transition-base);
+}
+footer a:hover { color: var(--color-accent); }
+
+.cms-credit {
+  font-style: italic;
+  font-size: 0.875rem;
+  color: var(--color-text-faint);
+}
+.cms-credit a { color: var(--color-text-faint); }
+.cms-credit a:hover { color: var(--color-accent); }
+
+.signup-box {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: var(--space-6);
+  margin: var(--space-10) 0 var(--space-8) 0;
+}
+.signup-heading {
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 var(--space-2) 0;
+  color: var(--color-text);
+  line-height: 1.25;
+}
+.signup-blurb {
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-4) 0;
+  line-height: 1.5;
+}
+.embeddable-buttondown-form {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: stretch;
+  margin: 0;
+}
+.embeddable-buttondown-form label.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+.embeddable-buttondown-form input[type="email"] {
+  flex: 1 1 240px;
+  min-width: 0;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  transition: border-color var(--transition-base);
+}
+.embeddable-buttondown-form input[type="email"]:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+.embeddable-buttondown-form input[type="email"]::placeholder {
+  color: var(--color-text-faint);
+}
+.embeddable-buttondown-form input[type="submit"] {
+  background: var(--color-accent);
+  color: #0f0f0f;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--border-radius);
+  padding: var(--space-3) var(--space-5);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background var(--transition-base), border-color var(--transition-base);
+}
+.embeddable-buttondown-form input[type="submit"]:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.signup-close {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-3);
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: var(--space-2);
+  display: none;
+  transition: color var(--transition-base);
+}
+.signup-close:hover { color: var(--color-text); }
+
+@media (min-width: 768px) {
+  .posts-list .signup-box {
+    position: fixed;
+    left: 50%;
+    bottom: var(--space-6);
+    transform: translateX(-50%);
+    width: calc(100% - var(--space-8));
+    max-width: calc(var(--container-prose) - var(--space-4));
+    margin: 0;
+    z-index: 50;
+    background: var(--color-surface);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--color-border);
+    backdrop-filter: blur(8px);
+  }
+  .posts-list .signup-box .signup-close { display: block; }
+  .posts-list { padding-bottom: 200px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+"""
+
+
+def run_init():
+    cwd = Path.cwd()
+    config_path = cwd / "moonshake.toml"
+    posts_path  = cwd / "posts"
+    css_path    = cwd / "site" / "blog" / "assets" / "style.css"
+    post_path   = posts_path / "hello-world.md"
+
+    created = []
+    skipped = []
+
+    def scaffold(path: Path, content: str):
+        if path.exists():
+            skipped.append(path.name)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        created.append(str(path.relative_to(cwd)))
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    scaffold(config_path, STARTER_TOML)
+    scaffold(post_path,   STARTER_POST.format(today=today))
+    scaffold(css_path,    STARTER_CSS)
+
+    print()
+    print("Moonshake — new project setup")
+    print("─" * 42)
+
+    for f in created:
+        print(f"  Created  {f}")
+    for f in skipped:
+        print(f"  Skipped  {f}  (already exists)")
+
+    if created:
+        print()
+        print("Next steps:")
+        print("  1. Open moonshake.toml and fill in your details")
+        print("     (name, site URL, email, nav links)")
+        print()
+        if "moonshake.toml" in created:
+            print("  2. If you have a newsletter, replace 'yourhandle' in [newsletter]")
+            print("     with your Buttondown username — or delete that section entirely.")
+            print()
+        print("  3. Preview your first build:")
+        print("       moonshake --dry")
+        print()
+        print("  4. Build your site:")
+        print("       moonshake")
+        print()
+        print("  Your starter stylesheet is at site/blog/assets/style.css")
+        print("  Customize the colors, fonts, and layout to make it your own.")
+    else:
+        print()
+        print("Nothing new to create — project already exists.")
+
+    print()
+    print("Docs: https://github.com/scottsteinhardt/moonshake")
+    print()
+
+
+if ARGS.command == "init":
+    run_init()
+    sys.exit(0)
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
+def load_config(path: str) -> dict:
+    candidates = [Path(path), Path.home() / ".moonshake.toml"]
+    for p in candidates:
+        if p.exists():
+            with open(p, "rb") as f:
+                return tomllib.load(f)
+    sys.exit(
+        "Config not found. Tried:\n"
+        + "\n".join(f"  {p}" for p in candidates)
+        + "\n\nRun 'moonshake init' to set up a new project,"
+        "\nor create a moonshake.toml manually."
+    )
+
+CFG = load_config(ARGS.config)
+
+_paths  = CFG.get("paths",    {})
+_blog   = CFG.get("blog",     {})
+_author = CFG.get("author",   {})
+_nav    = CFG.get("nav",      [])
+_news   = CFG.get("newsletter")  # optional — omit section to disable signup form
+
+POSTS_DIR  = Path(_paths.get("posts", "")).expanduser().resolve()
+SITE       = Path(_paths.get("site",  "")).expanduser().resolve()
+BLOG       = SITE / "blog"
+IMAGES_OUT = BLOG / "images" / "posts"
+
+BASE        = _blog.get("base_url",         "").rstrip("/")
+TITLE       = _blog.get("title",            "My Blog")
+SUBTITLE    = _blog.get("subtitle",         "")
+INDEX_DESC  = _blog.get("description",      "")
+RSS_DESC    = _blog.get("rss_description",  INDEX_DESC)
+AUTHOR      = _blog.get("author",           TITLE)
+EMAIL       = _blog.get("email",            "")
+LOCALE      = _blog.get("locale",           "en_US")
+CSS_URL     = _blog.get("css_url",          "/blog/assets/style.css")
+NON_POSTS   = set(_blog.get("excluded_slugs", []))
+DEFAULT_OG  = BASE + _blog.get("default_og_image", "/images/og-default.jpg")
+CMS_CREDIT_URL = _blog.get("cms_credit_url", "https://github.com/scottsteinhardt/moonshake")
+
+LOC_CITY    = _author.get("location_city",    "")
+LOC_REGION  = _author.get("location_region",  "")
+LOC_COUNTRY = _author.get("location_country", "US")
+SAME_AS     = [
+    v for k, v in _author.items()
+    if k in ("linkedin", "github", "bluesky", "twitter", "mastodon") and v
+]
+
+
+# ── Validate config ───────────────────────────────────────────────────────────
+def cfg_require(val, key):
+    if not val:
+        sys.exit(f"Config error: {key} is required in moonshake.toml")
+
+cfg_require(str(POSTS_DIR), "paths.posts")
+cfg_require(str(SITE),      "paths.site")
+cfg_require(BASE,           "blog.base_url")
+cfg_require(TITLE,          "blog.title")
+cfg_require(AUTHOR,         "blog.author")
+
+css_file = SITE / CSS_URL.lstrip("/")
+if not css_file.exists():
+    sys.exit(
+        f"Stylesheet not found: {css_file}\n"
+        f"Moonshake requires a CSS file at the path set in blog.css_url.\n"
+        f"Run 'moonshake init' to generate a starter stylesheet."
+    )
+
+
+# ── Nav builder ───────────────────────────────────────────────────────────────
+def build_nav(post_page: bool) -> str:
+    lines = ["<nav>"]
+    for link in _nav:
+        if link.get("post_only")  and not post_page: continue
+        if link.get("index_only") and post_page:     continue
+        href      = link.get("href",      "#")
+        label     = link.get("label",     "")
+        css_class = link.get("css_class", "nav-link")
+        external  = ' target="_blank" rel="noopener"' if link.get("external") else ""
+        lines.append(f'        <a href="{href}" class="{css_class}"{external}>{label}</a>')
+    lines.append("      </nav>")
+    return "\n".join(lines)
+
+NAV_POST  = build_nav(post_page=True)
+NAV_INDEX = build_nav(post_page=False)
+
+
+# ── Newsletter form ───────────────────────────────────────────────────────────
+def build_signup_form() -> str:
+    if not _news:
+        return ""
+    heading  = _news.get("heading",  "Subscribe to My Newsletter")
+    blurb    = _news.get("blurb",    "Get new posts by email. No spam, unsubscribe anytime.")
+    username = _news.get("username", "")
+    if not username:
+        sys.exit("Config error: newsletter.username is required when [newsletter] is present")
+    action = f"https://buttondown.com/api/emails/embed-subscribe/{username}"
+    return (
+        '<aside class="signup-box">\n'
+        f'      <h3 class="signup-heading">{html.escape(heading)}</h3>\n'
+        f'      <p class="signup-blurb">{html.escape(blurb)}</p>\n'
+        f'      <form action="{action}" method="post" class="embeddable-buttondown-form">\n'
+        '        <label for="bd-email" class="visually-hidden">Email</label>\n'
+        '        <input type="email" name="email" id="bd-email" placeholder="you@example.com" required>\n'
+        '        <input type="submit" value="Subscribe">\n'
+        '      </form>\n'
+        '    </aside>'
+    )
+
+SIGNUP_FORM = build_signup_form()
+
+FOOTER_CREDIT = (
+    f'<p class="cms-credit">Built with <a href="{html.escape(CMS_CREDIT_URL)}">Moonshake</a>.</p>'
+)
+
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+def slugify(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[-\s]+", "-", s).strip("-")
+    return s or "untitled"
+
+def to_utc(d):
+    if d is None: return None
+    if isinstance(d, datetime):
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    if isinstance(d, date):
+        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    if isinstance(d, str):
+        try: return datetime.fromisoformat(d.replace("Z", "+00:00"))
+        except ValueError: pass
+        for fmt in ("%B %d, %Y", "%B %-d, %Y", "%Y-%m-%d"):
+            try: return datetime.strptime(d, fmt).replace(tzinfo=timezone.utc)
+            except ValueError: continue
+    return None
+
+def iso_date(dt): return dt.astimezone(timezone.utc).strftime("%Y-%m-%d") if dt else None
+def iso_full(dt): return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00") if dt else None
+def pretty_date(dt): return dt.strftime("%B %-d, %Y") if dt else ""
+def rfc822(dt):      return format_datetime(dt.astimezone(timezone.utc)) if dt else ""
+
+
+# ── Frontmatter parse ─────────────────────────────────────────────────────────
+FM_RE = re.compile(r'^---\s*\n(.*?\n)---\s*\n?(.*)$', re.DOTALL)
+
+def parse_frontmatter(text: str):
+    m = FM_RE.match(text)
+    if not m:
+        return {}, text
+    try:
+        meta = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError as e:
+        print(f"  ! YAML error: {e}", file=sys.stderr)
+        meta = {}
+    return meta, m.group(2)
+
+
+# ── Image resolver ────────────────────────────────────────────────────────────
+def find_image(ref: str, post_dir: Path) -> Path | None:
+    ref = re.sub(r'[?#].*$', '', ref).strip()
+    if not ref or ref.startswith(("http://", "https://", "data:")):
+        return None
+
+    direct = post_dir / ref
+    if direct.is_file():
+        return direct.resolve()
+
+    bare = Path(ref).name
+    candidates = [
+        post_dir / bare,
+        post_dir / "images" / bare,
+        POSTS_DIR.parent / "images" / bare,
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c.resolve()
+
+    for p in POSTS_DIR.rglob(bare):
+        if p.is_file() and "node_modules" not in p.parts and ".obsidian" not in p.parts:
+            return p.resolve()
+    return None
+
+
+# ── Body prep: expand wiki images + copy/rewrite ──────────────────────────────
+WIKI_IMG = re.compile(r'!\[\[([^\]|]+?)(?:\|[^\]]*)?\]\]')
+
+def expand_wiki_images(md: str) -> str:
+    def sub(m):
+        inner = m.group(0)[3:-2]
+        parts = inner.split("|")
+        file = parts[0].strip()
+        alt  = parts[1].strip() if len(parts) > 1 else Path(file).stem
+        return f'![{alt}]({file})'
+    return WIKI_IMG.sub(sub, md)
+
+
+def process_images_in_html(body_html: str, post_dir: Path, slug: str,
+                            post_dt: datetime, copies: list) -> str:
+    ym = post_dt.strftime("%Y/%m") if post_dt else "unknown"
+    dest_rel = Path("images") / "posts" / ym / slug
+    dest_abs = BLOG / dest_rel
+
+    def rewrite(m):
+        prefix, src = m.group(1), m.group(2)
+        if src.startswith(("http://", "https://", "data:", "/")):
+            return m.group(0)
+        resolved = find_image(src, post_dir)
+        if not resolved:
+            print(f"  ! image not found: {src} (referenced in {slug})", file=sys.stderr)
+            return m.group(0)
+        out_name = resolved.name
+        out_path = dest_abs / out_name
+        copies.append((resolved, out_path))
+        new_src = f"/blog/{dest_rel}/{out_name}".replace("\\", "/")
+        return f'{prefix}"{new_src}"'
+
+    return re.sub(r'(<img\s[^>]*src=)"([^"]+)"', rewrite, body_html)
+
+
+# ── Markdown → HTML ───────────────────────────────────────────────────────────
+MD_EXT = ["extra", "sane_lists", "smarty", "codehilite", "toc"]
+
+def convert_markdown(md_body: str) -> str:
+    md_body = expand_wiki_images(md_body)
+    return md_lib.markdown(md_body, extensions=MD_EXT, output_format="html5")
+
+
+# ── Schema.org Person block ───────────────────────────────────────────────────
+def person_schema() -> str:
+    person = {
+        "@context": "https://schema.org",
+        "@type":    "Person",
+        "name":     AUTHOR,
+        "url":      BASE,
+    }
+    if EMAIL:      person["email"]   = EMAIL
+    if SAME_AS:    person["sameAs"]  = SAME_AS
+    if LOC_CITY or LOC_REGION:
+        addr = {"@type": "PostalAddress", "addressCountry": LOC_COUNTRY}
+        if LOC_CITY:   addr["addressLocality"] = LOC_CITY
+        if LOC_REGION: addr["addressRegion"]   = LOC_REGION
+        person["address"] = addr
+    return json.dumps(person, indent=2)
+
+PERSON_SCHEMA = person_schema()
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+def render_post_page(p: dict, body_html: str) -> str:
+    title    = p["title"]
+    slug     = p["slug"]
+    desc     = re.sub(r"\s+", " ", p["description"])[:300]
+    canonical = f"{BASE}/blog/{slug}/"
+    og_image  = p.get("feature_image_url") or DEFAULT_OG
+    pub_iso   = iso_full(p["date"]) or ""
+    upd_iso   = iso_full(p.get("updated") or p["date"]) or pub_iso
+    tags      = p.get("tags") or []
+    pretty    = pretty_date(p["date"])
+    feature_html = ""
+    if p.get("feature_image_url"):
+        feature_html = f'<figure><img src="{html.escape(p["feature_image_url"])}" alt="{html.escape(title)}"></figure>\n'
+
+    tags_meta = "\n  ".join(
+        f'<meta property="article:tag" content="{html.escape(t)}">' for t in tags
+    )
+    blogposting = {
+        "@context": "https://schema.org",
+        "@type":    "BlogPosting",
+        "headline":    title,
+        "description": desc,
+        "image":       og_image,
+        "url":         canonical,
+        "mainEntityOfPage": {"@type": "WebPage", "@id": canonical},
+        "author":    {"@type": "Person", "name": AUTHOR, "url": BASE},
+        "publisher": {"@type": "Person", "name": AUTHOR, "url": BASE},
+        "datePublished": pub_iso,
+        "dateModified":  upd_iso,
+    }
+    if tags: blogposting["keywords"] = tags
+    blogposting_json = json.dumps(blogposting, indent=2)
+
+    signup_html = f"\n    {SIGNUP_FORM}\n" if SIGNUP_FORM else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="shortcut icon" href="/favicon.ico">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{html.escape(title)} | {html.escape(TITLE)}</title>
+
+  <meta name="description" content="{html.escape(desc)}">
+  <meta name="author" content="{html.escape(AUTHOR)}">
+  <meta name="copyright" content="{html.escape(AUTHOR)}">
+  <meta name="robots" content="index, follow">
+
+  <link rel="canonical" href="{canonical}">
+
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="{html.escape(title)} | {html.escape(TITLE)}">
+  <meta property="og:description" content="{html.escape(desc)}">
+  <meta property="og:url" content="{canonical}">
+  <meta property="og:site_name" content="{html.escape(TITLE)}">
+  <meta property="og:image" content="{html.escape(og_image)}">
+  <meta property="og:locale" content="{LOCALE}">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{html.escape(title)} | {html.escape(TITLE)}">
+  <meta name="twitter:description" content="{html.escape(desc)}">
+  <meta name="twitter:image" content="{html.escape(og_image)}">
+
+  <meta property="article:published_time" content="{pub_iso}">
+  <meta property="article:modified_time" content="{upd_iso}">
+  <meta property="article:author" content="{html.escape(AUTHOR)}">
+  {tags_meta}
+
+  <script type="application/ld+json">
+  {PERSON_SCHEMA}
+  </script>
+
+  <script type="application/ld+json">
+  {blogposting_json}
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{CSS_URL}">
+  <link rel="alternate" type="application/rss+xml" title="RSS Feed" href="/blog/feed.xml">
+</head>
+<body>
+  <div class="container">
+    <header>
+      {NAV_POST}
+      <h1 class="blog-title">{html.escape(TITLE)}</h1>
+      <h2 class="post-title">{html.escape(title)}</h2>
+      <div class="date">{html.escape(pretty)}</div>
+    </header>
+
+    <main class="content">
+{feature_html}{body_html}
+    </main>
+{signup_html}
+    <footer>
+      <p>&copy; {datetime.now().year} {html.escape(AUTHOR)}. All rights reserved.</p>
+      {FOOTER_CREDIT}
+    </footer>
+  </div>
+</body>
+</html>
+"""
+
+
+# ── Load existing HTML posts ───────────────────────────────────────────────────
+def extract(pattern, text, group=1):
+    m = re.search(pattern, text)
+    return m.group(group) if m else None
+
+def load_existing_posts():
+    posts = []
+    for idx in BLOG.glob("*/index.html"):
+        slug = idx.parent.name
+        if slug in NON_POSTS: continue
+        t = idx.read_text()
+        title = extract(r'<h2 class="post-title">([^<]+)</h2>', t) or slug
+        title = html.unescape(title)
+        desc  = html.unescape(extract(r'<meta name="description" content="([^"]+)"', t) or "")
+        pub_iso = extract(r'<meta property="article:published_time" content="([^"]+)"', t)
+        dt = to_utc(pub_iso) if pub_iso else None
+        if not dt:
+            vis = extract(r'<div class="date">([^<]+)</div>', t)
+            dt = to_utc(vis) if vis else None
+        og_img = extract(r'<meta property="og:image" content="([^"]+)"', t)
+        if og_img == DEFAULT_OG:
+            og_img = None
+        posts.append({
+            "slug":              slug,
+            "title":             title,
+            "description":       desc,
+            "date":              dt,
+            "feature_image_url": og_img,
+            "updated":           dt,
+            "tags":              [],
+            "_source":           "existing",
+        })
+    return posts
+
+
+# ── Load Markdown posts ───────────────────────────────────────────────────────
+def load_markdown_posts():
+    posts = []
+    if not POSTS_DIR.exists():
+        return posts
+    for md_file in sorted(POSTS_DIR.rglob("*.md")):
+        if md_file.name.startswith("_") or md_file.name.lower() == "readme.md":
+            continue
+        text = md_file.read_text()
+        meta, body = parse_frontmatter(text)
+        if meta.get("draft"):
+            print(f"  - skip draft: {md_file.relative_to(POSTS_DIR)}")
+            continue
+
+        title = meta.get("title") or md_file.stem.replace("-", " ").replace("_", " ").title()
+        slug  = meta.get("slug")  or slugify(
+            md_file.stem if md_file.name != "index.md" else md_file.parent.name
+        )
+        dt      = to_utc(meta.get("date")) or datetime.fromtimestamp(md_file.stat().st_mtime, tz=timezone.utc)
+        updated = to_utc(meta.get("updated")) or dt
+
+        desc = (meta.get("description") or "").strip()
+        if not desc:
+            plain = re.sub(r"!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]+\)", "", body)
+            plain = re.sub(r"[#*_`>\[\]]+", "", plain).strip()
+            first_para = re.split(r"\n\s*\n", plain, maxsplit=1)[0]
+            desc = re.sub(r"\s+", " ", first_para)[:240]
+
+        feature      = meta.get("feature_image")
+        feature_path = None
+        if feature:
+            feature_path = find_image(str(feature), md_file.parent)
+            if not feature_path:
+                print(f"  ! feature_image not found for {slug}: {feature}", file=sys.stderr)
+
+        tags = meta.get("tags") or []
+        if isinstance(tags, str): tags = [tags]
+
+        posts.append({
+            "slug":              slug,
+            "title":             title,
+            "description":       desc,
+            "date":              dt,
+            "updated":           updated,
+            "feature_image_src": feature_path,
+            "tags":              list(tags),
+            "_source":           "markdown",
+            "_md_file":          md_file,
+            "_body_md":          body,
+        })
+    return posts
+
+
+# ── Render global indices ──────────────────────────────────────────────────────
+def item_html(p):
+    title = html.escape(p["title"])
+    desc  = html.escape(p.get("description") or "")
+    href  = f'/blog/{p["slug"]}/'
+    img   = p.get("feature_image_url")
+    img_block = ""
+    if img:
+        img_block = (
+            f'        <a class="post-item-image" href="{href}" aria-hidden="true" tabindex="-1">\n'
+            f'          <img src="{html.escape(img)}" alt="" loading="lazy">\n'
+            f'        </a>\n'
+        )
+    return (
+        '      <article class="post-item' + (' post-item--with-image' if img else '') + '">\n'
+        + img_block
+        + '        <div class="post-item-text">\n'
+        + f'          <h2><a href="{href}">{title}</a></h2>\n'
+        + f'          <div class="post-date">{html.escape(pretty_date(p["date"]))}</div>\n'
+        + f'          <div class="post-excerpt">{desc}</div>\n'
+        + '        </div>\n'
+        + '      </article>'
+    )
+
+def render_blog_index(posts):
+    posts = sorted(posts, key=lambda p: p["date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    parts = []
+    for i, p in enumerate(posts):
+        parts.append(item_html(p))
+        if i == 0 and SIGNUP_FORM:
+            parts.append("\n      " + SIGNUP_FORM)
+    posts_list = "\n\n".join(parts)
+    subtitle_html = f'\n      <p class="blog-subtitle">{html.escape(SUBTITLE)}</p>' if SUBTITLE else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="author" content="{html.escape(AUTHOR)}">
+  <meta name="copyright" content="{html.escape(AUTHOR)}">
+  <meta name="robots" content="index, follow">
+
+  <title>{html.escape(TITLE)}</title>
+  <meta name="description" content="{html.escape(INDEX_DESC)}">
+
+  <link rel="canonical" href="{BASE}/blog/">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{html.escape(TITLE)}">
+  <meta property="og:title" content="{html.escape(TITLE)}">
+  <meta property="og:description" content="{html.escape(INDEX_DESC)}">
+  <meta property="og:url" content="{BASE}/blog/">
+  <meta property="og:image" content="{html.escape(DEFAULT_OG)}">
+  <meta property="og:locale" content="{LOCALE}">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{html.escape(TITLE)}">
+  <meta name="twitter:description" content="{html.escape(INDEX_DESC)}">
+  <meta name="twitter:image" content="{html.escape(DEFAULT_OG)}">
+
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="shortcut icon" href="/favicon.ico">
+  <link rel="manifest" href="/site.webmanifest">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="{CSS_URL}">
+  <link rel="alternate" type="application/rss+xml" title="RSS Feed" href="/blog/feed.xml">
+</head>
+<body>
+  <div class="container">
+    <header>
+      {NAV_INDEX}
+      <h1 class="blog-title">{html.escape(TITLE)}</h1>{subtitle_html}
+    </header>
+
+    <main>
+      <div class="posts-list">
+{posts_list}
+
+      <button class="load-more" type="button" data-load-more>Load more posts</button>
+      </div>
+    </main>
+
+    <footer>
+      <p>&copy; {datetime.now().year} {html.escape(AUTHOR)}. All rights reserved.</p>
+      {FOOTER_CREDIT}
+    </footer>
+  </div>
+
+  <script>
+    (function () {{
+      var PAGE_SIZE = 15;
+      var items = document.querySelectorAll('.posts-list .post-item');
+      var btn = document.querySelector('[data-load-more]');
+      if (!items.length || !btn) return;
+      var visible = PAGE_SIZE;
+      function render() {{
+        items.forEach(function (el, i) {{ el.style.display = i < visible ? '' : 'none'; }});
+        if (visible >= items.length) btn.style.display = 'none';
+      }}
+      render();
+      btn.addEventListener('click', function () {{ visible += PAGE_SIZE; render(); }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
+def render_feed(posts):
+    posts = sorted(posts, key=lambda p: p["date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    build_date = rfc822(max((p["updated"] for p in posts if p["updated"]), default=datetime.now(timezone.utc)))
+    lines = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">',
+        '  <channel>',
+        f'    <title>{html.escape(TITLE)}</title>',
+        f'    <link>{BASE}/blog/</link>',
+        f'    <atom:link href="{BASE}/blog/feed.xml" rel="self" type="application/rss+xml" />',
+        f'    <description>{html.escape(RSS_DESC)}</description>',
+        '    <language>en-us</language>',
+        f'    <copyright>All rights reserved, {html.escape(AUTHOR)}</copyright>',
+        f'    <lastBuildDate>{build_date}</lastBuildDate>',
+        '    <generator>Moonshake</generator>',
+    ]
+    for p in posts:
+        url = f"{BASE}/blog/{p['slug']}/"
+        lines.append('    <item>')
+        lines.append(f'      <title><![CDATA[{p["title"]}]]></title>')
+        lines.append(f'      <link>{url}</link>')
+        lines.append(f'      <guid isPermaLink="true">{url}</guid>')
+        if p["date"]: lines.append(f'      <pubDate>{rfc822(p["date"])}</pubDate>')
+        lines.append(f'      <description><![CDATA[{p.get("description") or ""}]]></description>')
+        body_html = p.get("_body_html_absolute")
+        if body_html:
+            lines.append(f'      <content:encoded><![CDATA[{body_html}]]></content:encoded>')
+        img = p.get("feature_image_url")
+        if img:
+            mime = "image/jpeg"
+            low = img.lower().split("?")[0]
+            for ext, m in {".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+                           ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.items():
+                if low.endswith(ext): mime = m; break
+            lines.append(f'      <enclosure url="{html.escape(img)}" type="{mime}" length="0" />')
+        lines.append('    </item>')
+    lines.append('  </channel>')
+    lines.append('</rss>')
+    return "\n".join(lines) + "\n"
+
+
+def render_sitemap(posts):
+    posts_sorted = sorted(posts, key=lambda p: p["date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    last = max((p["updated"] for p in posts if p["updated"]), default=datetime.now(timezone.utc))
+
+    top_urls = []
+    exclude_dirs  = {"archive", "blog", "images", "assets", "node_modules"}
+    exclude_files = {"blog-posts.html"}
+    seen = set()
+    def add(u):
+        if u not in seen: seen.add(u); top_urls.append(u)
+
+    add("/")
+    for p in sorted(SITE.glob("*.html")):
+        if p.name in exclude_files or p.name == "index.html": continue
+        add(f"/{p.name}")
+    for d in sorted(SITE.iterdir()):
+        if not d.is_dir() or d.name.startswith(".") or d.name in exclude_dirs: continue
+        if (d / "index.html").exists():
+            add(f"/{d.name}/")
+        for sub in sorted(d.glob("*.html")):
+            if sub.name == "index.html": continue
+            add(f"/{d.name}/{sub.name}")
+
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for u in top_urls:
+        priority = "1.0" if u == "/" else "0.8"
+        parts.append(f'  <url>\n    <loc>{BASE}{u}</loc>\n    <changefreq>monthly</changefreq>\n    <priority>{priority}</priority>\n  </url>')
+    parts.append(f'  <url>\n    <loc>{BASE}/blog/</loc>\n    <lastmod>{iso_date(last)}</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.9</priority>\n  </url>')
+    for p in posts_sorted:
+        parts.append(f'  <url>\n    <loc>{BASE}/blog/{p["slug"]}/</loc>\n    <lastmod>{iso_date(p["updated"])}</lastmod>\n    <changefreq>yearly</changefreq>\n    <priority>0.7</priority>\n  </url>')
+    parts.append('</urlset>')
+    return "\n".join(parts) + "\n"
+
+
+def render_llms(posts):
+    posts_sorted = sorted(posts, key=lambda p: p["date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    lines = [
+        f"# {TITLE}", "",
+        f"> {INDEX_DESC}",
+        "",
+        "## Main sections", "",
+        f"- [Home]({BASE}/): Site homepage",
+        f"- [Blog]({BASE}/blog/): Posts",
+        "",
+        "## Blog posts", "",
+        "Listed newest first.",
+        "",
+    ]
+    for p in posts_sorted:
+        date_str = iso_date(p["date"]) or ""
+        meta_bits = [date_str] if date_str else []
+        if p.get("description"): meta_bits.append(p["description"])
+        line = f"- [{p['title']}]({BASE}/blog/{p['slug']}/)"
+        if meta_bits: line += " — " + " — ".join(meta_bits)
+        lines.append(line)
+    lines += [
+        "",
+        "## Feeds", "",
+        f"- [RSS]({BASE}/blog/feed.xml)",
+        f"- [Sitemap]({BASE}/sitemap.xml)",
+        "",
+    ]
+    if EMAIL:
+        lines += ["## Contact", "", f"- Email: {EMAIL}", ""]
+    return "\n".join(lines)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def write_file(path: Path, content: str):
+    if DRY:
+        print(f"  [dry] would write {path} ({len(content)} bytes)")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+def copy_file(src: Path, dest: Path):
+    if DRY:
+        print(f"  [dry] would copy {src.name} -> {dest}")
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists() or src.stat().st_mtime > dest.stat().st_mtime:
+        shutil.copy2(src, dest)
+
+def main():
+    if not POSTS_DIR.exists():
+        POSTS_DIR.mkdir(parents=True)
+        print(f"created {POSTS_DIR} (empty)")
+
+    existing = load_existing_posts()
+    if existing:
+        print(f"Found {len(existing)} existing HTML posts")
+
+    print("Loading Markdown posts...")
+    new_posts = load_markdown_posts()
+    print(f"  {len(new_posts)} posts")
+
+    rendered_new = 0
+    image_copies = []
+
+    for p in new_posts:
+        slug     = p["slug"]
+        post_dir = p["_md_file"].parent
+        dt       = p["date"]
+
+        if p.get("feature_image_src"):
+            src = p["feature_image_src"]
+            ym  = dt.strftime("%Y/%m") if dt else "unknown"
+            dest = BLOG / "images" / "posts" / ym / slug / src.name
+            image_copies.append((src, dest))
+            p["feature_image_url"] = f"{BASE}/blog/images/posts/{ym}/{slug}/{src.name}"
+
+        html_body = convert_markdown(p["_body_md"])
+        html_body = process_images_in_html(html_body, post_dir, slug, dt, image_copies)
+        p["_body_html_absolute"] = re.sub(r'(src|href)="(/[^"]+)"', r'\1="' + BASE + r'\2"', html_body)
+
+        page_html = render_post_page(p, html_body)
+        write_file(BLOG / slug / "index.html", page_html)
+        print(f"  + {slug}  -> /blog/{slug}/")
+        rendered_new += 1
+
+    for src, dest in image_copies:
+        copy_file(src, dest)
+
+    by_slug = {p["slug"]: p for p in existing}
+    for p in new_posts:
+        by_slug[p["slug"]] = p
+    all_posts = list(by_slug.values())
+
+    print(f"Rebuilding blog index ({len(all_posts)} posts)...")
+    write_file(BLOG / "index.html", render_blog_index(all_posts))
+    print("Rebuilding feed.xml...")
+    write_file(BLOG / "feed.xml", render_feed(all_posts))
+    print("Rebuilding sitemap.xml...")
+    write_file(SITE / "sitemap.xml", render_sitemap(all_posts))
+    print("Rebuilding llms.txt...")
+    write_file(SITE / "llms.txt", render_llms(all_posts))
+
+    print()
+    print(f"Done. Rendered {rendered_new} Markdown posts; {len(image_copies)} image copies; {len(all_posts)} total posts.")
+
+    if not DRY:
+        now      = datetime.now()
+        zip_name = now.strftime("UPLOAD THIS AS OF %Y-%m-%d %-I:%M %p.zip")
+        zip_path = SITE.parent / zip_name
+        print(f"Zipping site -> {zip_path.name}")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in SITE.rglob("*"):
+                if f.is_file():
+                    zf.write(f, f.relative_to(SITE.parent))
+        print(f"  {zip_path.stat().st_size // 1024:,} KB  ->  {zip_path}")
+
+
+if __name__ == "__main__":
+    main()
