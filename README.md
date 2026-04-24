@@ -2,7 +2,7 @@
 
 
 
-A no-nonsense static blog builder for people who like to write and/or tinker.
+A no-nonsense static CMS (blog builder) for people who like to write and/or tinker.
 
 Named after [the Can song](https://open.spotify.com/track/6ACXIPu0jhLDriV5sjrWtb).
 
