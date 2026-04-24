@@ -39,7 +39,7 @@ Hosting is free. Because it's just HTML files, you can deploy to [Cloudflare Pag
 
   <figure>
     <img width="1027" height="745" alt="image" src="https://github.com/user-attachments/assets/c2fdffcd-6106-45be-b10d-ca25dab5296f" />
-    <figcaption>What a Moonshake post looks like when written in Obsidian</figcaption>
+    <figcaption><i>Above: What a Moonshake post looks like when written in Obsidian</i></figcaption>
   </figure>
 
 
