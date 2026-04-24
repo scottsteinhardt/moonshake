@@ -1,6 +1,8 @@
 # Moonshake
 
-A no-nonsense static blog builder for people who are done with WordPress.
+<img width="1155" height="825" alt="Screenshot 2026-04-24 at 4 41 09 PM" src="https://github.com/user-attachments/assets/d5438f2d-7b8f-4c7f-94cd-a021bb380477" />
+
+A no-nonsense static blog builder for people who like to tinker.
 
 Named after [the Can song](https://open.spotify.com/track/6ACXIPu0jhLDriV5sjrWtb).
 
@@ -10,17 +12,17 @@ Named after [the Can song](https://open.spotify.com/track/6ACXIPu0jhLDriV5sjrWtb
 
 ## Why Moonshake
 
-If you work in marketing or communications, you've probably lost hours of your life to WordPress plugins, ghost themes, Squarespace limitations, or some agency's proprietary CMS that requires a support ticket to change a comma.
+If you work in marketing or communications, you've probably lost hours of your life to WordPress plugins, themes, Squarespace limitations, or some agency's proprietary CMS that requires a support ticket to change a comma. (I am currently experiencing this, and this project was made partially out of such frustrations.)
 
 Moonshake is what I built instead: a single Python script that turns a folder of Markdown files into a complete, deployable blog. No dashboard, no database, no monthly fees. You write in whatever editor you like (I use [Obsidian](https://obsidian.md/)), run one command, and get a static site ready to upload.
 
-Hosting is free. Because it's just HTML files, you can deploy to [Cloudflare Pages](https://pages.cloudflare.com/), Netlify, GitHub Pages, or any static host. I use Cloudflare Pages and pay nothing.
+Hosting is free. Because it's just HTML files, you can deploy to [Cloudflare Pages](https://pages.cloudflare.com/), Netlify, GitHub Pages, or any static host. I use Cloudflare Pages and pay nothing. Big ups to Cloudflare Pages!
 
 ---
 
 ## What it does
 
-- Converts Markdown posts to clean, SEO-ready HTML
+- Converts Markdown posts to clean, SEO-ready HTML. (Also AEO/GEO, if that's your steez.)
 - Handles images automatically — drop them anywhere in your posts folder, Moonshake finds, copies, and rewrites the paths
 - Builds a paginated blog index, RSS feed, sitemap.xml, and llms.txt
 - Generates full Open Graph, Twitter Card, and Schema.org structured data on every post
@@ -31,6 +33,13 @@ Hosting is free. Because it's just HTML files, you can deploy to [Cloudflare Pag
 - Auto-generates a timestamped zip of your site after every build, ready to upload
 - Draft support — set `draft: true` in any post to hide it from builds
 - Works great with Obsidian (including `![[wiki image]]` syntax) but only requires Markdown files — use any editor you like
+- Honestly, it just lets you focus on writing instead of worrying about bits and bobs. But if you wanna worry about bits and bobs, there's plenty to worry about.
+
+  <figure>
+    <img width="1027" height="745" alt="image" src="https://github.com/user-attachments/assets/c2fdffcd-6106-45be-b10d-ca25dab5296f" />
+    <figcaption>What a Moonshake post looks like when written in Obsidian</figcaption>
+  </figure>
+
 
 ---
 
