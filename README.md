@@ -6,7 +6,7 @@ A no-nonsense static blog builder for people who like to tinker.
 
 Named after [the Can song](https://open.spotify.com/track/6ACXIPu0jhLDriV5sjrWtb).
 
-<a href="https://scottfromny.com/blog"><img width="1155" height="825" alt="Screenshot 2026-04-24 at 4 41 09 PM" src="https://github.com/user-attachments/assets/d5438f2d-7b8f-4c7f-94cd-a021bb380477" /></a>
+<a href="https://scottfromny.com/blog" target="_blank" rel="noopener"><img width="1155" height="825" alt="Screenshot 2026-04-24 at 4 41 09 PM" src="https://github.com/user-attachments/assets/d5438f2d-7b8f-4c7f-94cd-a021bb380477" /></a>
 
 **[See it live at scottfromny.com/blog](https://www.scottfromny.com/blog/)**
 
