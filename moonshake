@@ -622,6 +622,40 @@ footer a:hover { color: var(--color-accent); }
   .posts-list { padding-bottom: 200px; }
 }
 
+/* ── Hamburger (mobile / tablet portrait ≤ 768px) ────────────────────────── */
+.hamburger {
+  display: none;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.3rem 0.5rem;
+  transition: color var(--transition-base), border-color var(--transition-base);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.hamburger:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
+
+@media (max-width: 768px) {
+  .hamburger { display: block; }
+  nav a { display: none; }
+  nav.nav-open {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+  nav.nav-open a { display: block; }
+  nav.nav-open .hamburger { margin-left: 0; margin-bottom: var(--space-2); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -767,6 +801,7 @@ if not css_file.exists():
 # ── Nav builder ───────────────────────────────────────────────────────────────
 def build_nav(post_page: bool) -> str:
     lines = ["<nav>"]
+    lines.append('        <button class="hamburger" id="hamburger" aria-label="Open menu">&#9776;</button>')
     for link in _nav:
         if link.get("post_only")  and not post_page: continue
         if link.get("index_only") and post_page:     continue
@@ -1047,6 +1082,21 @@ def render_post_page(p: dict, body_html: str) -> str:
       {FOOTER_CREDIT}
     </footer>
   </div>
+
+  <script>
+    (function () {{
+      var btn = document.getElementById('hamburger');
+      var nav = document.querySelector('header nav');
+      if (!btn || !nav) return;
+      btn.addEventListener('click', function (e) {{
+        e.stopPropagation();
+        nav.classList.toggle('nav-open');
+      }});
+      document.addEventListener('click', function (e) {{
+        if (!nav.contains(e.target)) nav.classList.remove('nav-open');
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -1233,6 +1283,19 @@ def render_blog_index(posts):
   </div>
 
   <script>
+    (function () {{
+      var btn = document.getElementById('hamburger');
+      var nav = document.querySelector('header nav');
+      if (btn && nav) {{
+        btn.addEventListener('click', function (e) {{
+          e.stopPropagation();
+          nav.classList.toggle('nav-open');
+        }});
+        document.addEventListener('click', function (e) {{
+          if (!nav.contains(e.target)) nav.classList.remove('nav-open');
+        }});
+      }}
+    }})();
     (function () {{
       var PAGE_SIZE = 15;
       var items = document.querySelectorAll('.posts-list .post-item');
