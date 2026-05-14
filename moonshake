@@ -653,7 +653,7 @@ footer a:hover { color: var(--color-accent); }
     border-bottom: 1px solid var(--color-border-subtle);
   }
   nav.nav-open a { display: block; }
-  nav.nav-open .hamburger { margin-left: 0; margin-bottom: var(--space-2); }
+  nav.nav-open .hamburger { margin-bottom: var(--space-2); }
 }
 
 @media (prefers-reduced-motion: reduce) {
