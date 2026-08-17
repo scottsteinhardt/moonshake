@@ -829,6 +829,7 @@ def build_signup_form() -> str:
     action = f"https://buttondown.com/api/emails/embed-subscribe/{username}"
     return (
         '<aside class="signup-box">\n'
+        '      <button type="button" class="signup-close" data-signup-close aria-label="Dismiss newsletter signup">&times;</button>\n'
         f'      <h3 class="signup-heading">{html.escape(heading)}</h3>\n'
         f'      <p class="signup-blurb">{html.escape(blurb)}</p>\n'
         f'      <form action="{action}" method="post" class="embeddable-buttondown-form">\n'
@@ -947,7 +948,7 @@ def process_images_in_html(body_html: str, post_dir: Path, slug: str,
         new_src = f"/blog/{dest_rel}/{out_name}".replace("\\", "/")
         return f'{prefix}"{new_src}"'
 
-    return re.sub(r'(<img\s[^>]*src=)"([^"]+)"', rewrite, body_html)
+    return re.sub(r'(<(?:img|source)\s[^>]*src=|poster=)"([^"]+)"', rewrite, body_html)
 
 
 # ── Markdown → HTML ───────────────────────────────────────────────────────────
@@ -1308,6 +1309,17 @@ def render_blog_index(posts):
       }}
       render();
       btn.addEventListener('click', function () {{ visible += PAGE_SIZE; render(); }});
+    }})();
+    (function () {{
+      var KEY = 'signup-dismissed';
+      var box = document.querySelector('.posts-list .signup-box');
+      var closeBtn = document.querySelector('[data-signup-close]');
+      if (!box || !closeBtn) return;
+      if (localStorage.getItem(KEY)) box.style.display = 'none';
+      closeBtn.addEventListener('click', function () {{
+        box.style.display = 'none';
+        localStorage.setItem(KEY, '1');
+      }});
     }})();
   </script>
 </body>
