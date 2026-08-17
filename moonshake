@@ -1013,6 +1013,17 @@ def render_post_page(p: dict, body_html: str) -> str:
     if tags: blogposting["keywords"] = tags
     blogposting_json = json.dumps(blogposting, indent=2)
 
+    breadcrumb = {
+        "@context": "https://schema.org",
+        "@type":    "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": BASE + "/"},
+            {"@type": "ListItem", "position": 2, "name": "Blog", "item": f"{BASE}/blog/"},
+            {"@type": "ListItem", "position": 3, "name": title, "item": canonical},
+        ],
+    }
+    breadcrumb_json = json.dumps(breadcrumb, indent=2)
+
     signup_html = f"\n    {SIGNUP_FORM}\n" if SIGNUP_FORM else ""
 
     return f"""<!DOCTYPE html>
@@ -1060,6 +1071,10 @@ def render_post_page(p: dict, body_html: str) -> str:
   {blogposting_json}
   </script>
 
+  <script type="application/ld+json">
+  {breadcrumb_json}
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="{CSS_URL}">
@@ -1069,8 +1084,8 @@ def render_post_page(p: dict, body_html: str) -> str:
   <div class="container">
     <header>
       {NAV_POST}
-      <h1 class="blog-title">{html.escape(TITLE)}</h1>
-      <h2 class="post-title">{html.escape(title)}</h2>
+      <h2 class="blog-title">{html.escape(TITLE)}</h2>
+      <h1 class="post-title">{html.escape(title)}</h1>
       <div class="date">{html.escape(pretty)}</div>
     </header>
 
@@ -1114,7 +1129,7 @@ def load_existing_posts():
         slug = idx.parent.name
         if slug in NON_POSTS: continue
         t = idx.read_text()
-        title = extract(r'<h2 class="post-title">([^<]+)</h2>', t) or slug
+        title = extract(r'<h[12] class="post-title">([^<]+)</h[12]>', t) or slug
         title = html.unescape(title)
         desc  = html.unescape(extract(r'<meta name="description" content="([^"]+)"', t) or "")
         pub_iso = extract(r'<meta property="article:published_time" content="([^"]+)"', t)
@@ -1125,6 +1140,7 @@ def load_existing_posts():
         og_img = extract(r'<meta property="og:image" content="([^"]+)"', t)
         if og_img == DEFAULT_OG:
             og_img = None
+        body_html = extract(r'(?s)<main class="content">(.*?)</main>', t, group=1)
         posts.append({
             "slug":              slug,
             "title":             title,
@@ -1134,6 +1150,7 @@ def load_existing_posts():
             "updated":           dt,
             "tags":              [],
             "_source":           "existing",
+            "_body_html":        body_html,
         })
     return posts
 
@@ -1431,10 +1448,57 @@ def render_llms(posts):
         "## Feeds", "",
         f"- [RSS]({BASE}/blog/feed.xml)",
         f"- [Sitemap]({BASE}/sitemap.xml)",
+        f"- [Full text]({BASE}/llms-full.txt)",
         "",
     ]
     if EMAIL:
         lines += ["## Contact", "", f"- Email: {EMAIL}", ""]
+    return "\n".join(lines)
+
+
+def html_to_plain(body_html: str) -> str:
+    text = re.sub(r'<(script|style)\b.*?</\1>', '', body_html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</(p|div|li|h[1-6]|figure|figcaption)>', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    text = re.sub(r'[ \t]+\n', '\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def render_llms_full(posts):
+    posts_sorted = sorted(posts, key=lambda p: p["date"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    lines = [
+        f"# {TITLE} — Full Text",
+        "",
+        f"> {INDEX_DESC}",
+        "",
+        "Complete text of every post, newest first. See /llms.txt for a compact index.",
+        "",
+        "---",
+        "",
+    ]
+    for p in posts_sorted:
+        body = p.get("_body_md")
+        if body is None:
+            body = html_to_plain(p.get("_body_html") or "")
+        lines.append(f"## {p['title']}")
+        lines.append("")
+        meta_bits = []
+        date_str = iso_date(p["date"])
+        if date_str: meta_bits.append(f"Date: {date_str}")
+        meta_bits.append(f"URL: {BASE}/blog/{p['slug']}/")
+        if p.get("tags"): meta_bits.append("Tags: " + ", ".join(p["tags"]))
+        lines.append("  \n".join(meta_bits))
+        lines.append("")
+        if p.get("description"):
+            lines.append(p["description"])
+            lines.append("")
+        lines.append(body)
+        lines.append("")
+        lines.append("---")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -1507,6 +1571,8 @@ def main():
     write_file(SITE / "sitemap.xml", render_sitemap(all_posts))
     print("Rebuilding llms.txt...")
     write_file(SITE / "llms.txt", render_llms(all_posts))
+    print("Rebuilding llms-full.txt...")
+    write_file(SITE / "llms-full.txt", render_llms_full(all_posts))
 
     print()
     print(f"Done. Rendered {rendered_new} Markdown posts; {len(image_copies)} image copies; {len(all_posts)} total posts.")
